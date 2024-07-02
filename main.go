@@ -3,13 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
-	"regexp"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -34,12 +38,28 @@ type TempSetData struct {
 }
 
 func main() {
+	config := LoadConfig()
+	defer config.WriteConfig()
+
+	logger := &lumberjack.Logger{
+		Filename: config.LogLocation + "bahoa.log",
+		MaxSize: 200, // megabytes
+		MaxBackups: 3,
+		MaxAge: 28, // days
+		Compress: true,
+	}
+
+	mw := io.MultiWriter(os.Stdout, logger)
+
+	log.SetOutput(mw)
+	defer logger.Close()
+
 	raspiAdaptor := raspi.NewAdaptor()
 	raspiAdaptor.Connect()
 
 	ads1115driver := i2c.NewADS1115Driver(raspiAdaptor, i2c.WithADS1x15BestGainForVoltage(3.3))
 
-	dutyCycle := NewDutyCycle(5*time.Second, 0)
+	dutyCycle := NewDutyCycle(time.Duration(config.DutyCycle.Period)*time.Second, 0)
 
 	rpio.Open()
 
@@ -51,9 +71,9 @@ func main() {
 
 	pidController := pid.Controller{
 		Config: pid.ControllerConfig{
-			ProportionalGain: 3.0,
-			IntegralGain: 0.0,
-			DerivativeGain: 0.0,
+			ProportionalGain: config.Pid.ProportionalGain,
+			IntegralGain: config.Pid.IntegralGain,
+			DerivativeGain: config.Pid.DerivativeGain,
 		},
 	}
 
@@ -116,12 +136,13 @@ func main() {
 						log.Default().Println("Recovered in f", r)
 					}
 				}()
-				log.Default().Println(pidData["p"])
-				log.Default().Println(pidData["i"])
-				log.Default().Println(pidData["d"])
 				pidController.Config.ProportionalGain = pidData["p"].(float64)
+				config.Pid.ProportionalGain = pidData["p"].(float64)
 				pidController.Config.IntegralGain = pidData["i"].(float64)
+				config.Pid.IntegralGain = pidData["i"].(float64)
 				pidController.Config.DerivativeGain = pidData["d"].(float64)
+				config.Pid.DerivativeGain = pidData["d"].(float64)
+				config.WriteConfig()
 				newPidData := map[string]float64{
 					"p": pidController.Config.ProportionalGain,
 					"i": pidController.Config.IntegralGain,
@@ -144,6 +165,8 @@ func main() {
 				}()
 				log.Default().Println(period)
 				dutyCycle.SetPeriod(time.Duration(period * 1000.0) * time.Millisecond)
+				config.DutyCycle.Period = period
+				config.WriteConfig()
 				socket.Emit("dutyCyclePeriod", float64(dutyCycle.GetPeriod()) / float64(time.Second))
 			})
 		})
@@ -152,7 +175,7 @@ func main() {
 
 		adc := NewADC(3.3, ads1115driver)
 		probeChannels := []int{0, 1, 2, 3}
-		procTime := 200*time.Millisecond
+		procTime := time.Duration(config.ProcessTime)*time.Millisecond
 		gobot.Every(procTime, func() {
 			for i, channel := range probeChannels {
 				if slices.IndexFunc(probes, func(p Probe) bool {
