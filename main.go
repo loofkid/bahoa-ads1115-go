@@ -41,6 +41,8 @@ func main() {
 	config := LoadConfig()
 	defer config.WriteConfig()
 
+	os.MkdirAll(config.LogLocation, 0755)
+
 	logger := &lumberjack.Logger{
 		Filename: config.LogLocation + "bahoa.log",
 		MaxSize: 200, // megabytes

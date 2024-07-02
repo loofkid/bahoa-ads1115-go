@@ -31,8 +31,10 @@ func LoadConfig() *Config {
 
 
 	viper.SetConfigName("config")
-	viper.AddConfigPath("/opt/bahoa/")
 	viper.SetConfigType("yaml")
+	viper.AddConfigPath("/opt/bahoa/")
+	viper.AddConfigPath("$HOME/.bahoa")
+	viper.AddConfigPath(".")
 
 	err := viper.ReadInConfig()
 	if err != nil {
@@ -43,7 +45,10 @@ func LoadConfig() *Config {
 		}
 	}
 
-	viper.WriteConfig()
+	errWrite := viper.WriteConfigAs("/opt/bahoa/config.yaml")
+	if errWrite != nil {
+		panic(errWrite)
+	}
 
 	config := &Config{}
 
