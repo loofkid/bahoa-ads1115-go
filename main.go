@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -8,23 +9,58 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"encoding/json"
+	"regexp"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 
-	"gobot.io/x/gobot"
-	"gobot.io/x/gobot/drivers/i2c"
-	"gobot.io/x/gobot/platforms/raspi"
+	"go.einride.tech/pid"
+
+	"gobot.io/x/gobot/v2"
+	// "gobot.io/x/gobot/v2/drivers/gpio"
+	"gobot.io/x/gobot/v2/drivers/i2c"
+
+	"github.com/stianeikeland/go-rpio/v4"
+
+	// "gobot.io/x/gobot/v2/platforms/adaptors"
+	"gobot.io/x/gobot/v2/platforms/raspi"
 
 	sio "github.com/zishang520/socket.io/v2/socket"
 )
 
+type TempSetData struct {
+	ProbeId string
+	SetTemp float64
+}
+
 func main() {
 	raspiAdaptor := raspi.NewAdaptor()
+	raspiAdaptor.Connect()
 
-	ads1115driver := i2c.NewADS1115Driver(raspiAdaptor)
+	ads1115driver := i2c.NewADS1115Driver(raspiAdaptor, i2c.WithADS1x15BestGainForVoltage(3.3))
+
+	dutyCycle := NewDutyCycle(5*time.Second, 0)
+
+	rpio.Open()
+
+	heatPin := rpio.Pin(22)
+	heatPin.Output()
+	heatPin.Low()
+	defer heatPin.Low()
+	dutyCycle.Start(heatPin.High, heatPin.Low)
+
+	pidController := pid.Controller{
+		Config: pid.ControllerConfig{
+			ProportionalGain: 3.0,
+			IntegralGain: 0.0,
+			DerivativeGain: 0.0,
+		},
+	}
+
+	probes := []Probe{}
 
 	work := func() {
+
 		port := "0.0.0.0:3000"
 
 		socketServer := sio.NewServer(nil, nil)
@@ -36,10 +72,6 @@ func main() {
 			w.Write([]byte("poopsicles!"))
 		})
 
-		// router.HandleFunc("/socket.io", func(w http.ResponseWriter, r *http.Request) {
-		// 	log.Println("Socket.io connection")
-		// 	socketServer.ServeHandler(nil).ServeHTTP(w, r)
-		// })
 		router.Handle("/socket.io/", socketServer.ServeHandler(nil))
 
 		socketServer.On("connection", func(clients ...any) {
@@ -48,21 +80,99 @@ func main() {
 			socket.Emit("connected", "Connected to server")
 			log.Printf("Socket %v connected\n", clients)
 			socket.Join("probes")
+
+			socket.On("setTemp", func(data ...any) {
+				log.Default().Println(data[0])
+				tempSetData := data[0].(map[string]interface{})
+				defer func() {
+					if r := recover(); r != nil {
+						log.Default().Println("Recovered in f", r)
+					}
+				}()
+				log.Default().Println(tempSetData["ProbeId"])
+				log.Default().Println(tempSetData["SetTemp"])
+				probeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == tempSetData["ProbeId"].(string) })
+				
+				if probeIndex != -1 {
+					probes[probeIndex].SetTempK(tempSetData["SetTemp"].(float64))
+				}
+			})
+
+			socket.On("getPID", func(a ...any) {
+				pidData := map[string]float64{
+					"p": pidController.Config.ProportionalGain,
+					"i": pidController.Config.IntegralGain,
+					"d": pidController.Config.DerivativeGain,
+				}
+
+				socket.Emit("PID", pidData)
+			})
+
+			socket.On("setPID", func(data ...any) {
+				log.Default().Println(data[0])
+				pidData := data[0].(map[string]interface{})
+				defer func() {
+					if r := recover(); r != nil {
+						log.Default().Println("Recovered in f", r)
+					}
+				}()
+				log.Default().Println(pidData["p"])
+				log.Default().Println(pidData["i"])
+				log.Default().Println(pidData["d"])
+				pidController.Config.ProportionalGain = pidData["p"].(float64)
+				pidController.Config.IntegralGain = pidData["i"].(float64)
+				pidController.Config.DerivativeGain = pidData["d"].(float64)
+				newPidData := map[string]float64{
+					"p": pidController.Config.ProportionalGain,
+					"i": pidController.Config.IntegralGain,
+					"d": pidController.Config.DerivativeGain,
+				}
+				socket.Emit("PID", newPidData)
+			})
+
+			socket.On("getDutyCyclePeriod", func(a ...any) {
+				socket.Emit("dutyCyclePeriod", float64(dutyCycle.GetPeriod()) / float64(time.Second))
+			})
+
+			socket.On("setDutyCyclePeriod", func(data ...any) {
+				log.Default().Println(data[0])
+				period := data[0].(float64)
+				defer func() {
+					if r := recover(); r != nil {
+						log.Default().Println("Recovered in f", r)
+					}
+				}()
+				log.Default().Println(period)
+				dutyCycle.SetPeriod(time.Duration(period * 1000.0) * time.Millisecond)
+				socket.Emit("dutyCyclePeriod", float64(dutyCycle.GetPeriod()) / float64(time.Second))
+			})
 		})
 
 		router.Use(authMiddleware)
 
 		adc := NewADC(3.3, ads1115driver)
-		probes := []Probe{}
 		probeChannels := []int{0, 1, 2, 3}
-		gobot.Every(200*time.Millisecond, func() {
+		procTime := 200*time.Millisecond
+		gobot.Every(procTime, func() {
 			for i, channel := range probeChannels {
-				if (slices.IndexFunc(probes, func(p Probe) bool {
-					return p.Id == fmt.Sprintf("probe-%v", i + 1)
-				}) == -1) {
-					probe := NewProbe(fmt.Sprintf("probe-%v", i + 1), fmt.Sprintf("Probe %v", i), 0x48, channel, 100000, adc, 5)
-					if (probe.ReadConnected()) {
-						probes = append(probes, *probe)
+				if slices.IndexFunc(probes, func(p Probe) bool {
+					return p.Id == fmt.Sprintf("probe-%v", i)
+				}) == -1 {
+						if channel == 0 {
+							probe := NewProbe(fmt.Sprintf("probe-%v", i), "Smoker", 0x48, channel, 100000, adc, 5)
+							
+							if (probe.ReadConnected()) {
+								probes = append(probes, *probe)
+							}
+						} else {
+							probe := NewProbe(fmt.Sprintf("probe-%v", i), fmt.Sprintf("Probe %v", i), 0x48, channel, 100000, adc, 5)
+							if (probe.ReadConnected()) {
+								probes = append(probes, *probe)
+							}
+						}
+				} else {
+					if !probes[i].ReadConnected() {
+						probes = slices.DeleteFunc(probes, func(p Probe) bool { return p.Id == fmt.Sprintf("probe-%v", i) })
 					}
 				}
 			}
@@ -73,23 +183,59 @@ func main() {
 				if errK != nil {
 					fmt.Println(errK)
 				} else {
-					fmt.Printf("%v: %vK\n", probe.Name, roundFloat(tempK, 2))
-					fmt.Printf("%v: %vºC\n", probe.Name, roundFloat(tempC, 2))
-					fmt.Printf("%v: %vºF\n", probe.Name, roundFloat(tempF, 2))
+					// fmt.Printf("Set Temp: %vºF\n", probe.GetSetTempF())
+					// fmt.Printf("%v: %vK\n", probe.Name, roundFloat(tempK, 2))
+					// fmt.Printf("%v: %vºC\n", probe.Name, roundFloat(tempC, 2))
+					// fmt.Printf("%v: %vºF\n", probe.Name, roundFloat(tempF, 2))
 					probeJson, _ := json.Marshal(map[string]interface{}{
 						"id": probe.Id,
 						"name": probe.Name,
 						"tempK": roundFloat(tempK, 2),
 						"tempC": roundFloat(tempC, 2),
 						"tempF": roundFloat(tempF, 2),
+						"setTempK": probe.GetSetTempK(),
+						"setTempC": probe.GetSetTempC(),
+						"setTempF": probe.GetSetTempF(),
 					})
 					socketServer.In("probes").Emit("probe", probeJson)
+				}
+			}
+			if len(probes) > 0 {
+				smokerProbeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == "probe-0" })
+				if smokerProbeIndex != -1 && probes[smokerProbeIndex].ReadConnected() {
+					smokerProbe := probes[smokerProbeIndex]
+					currentTemp, _ := smokerProbe.ReadTempK()
+					setTemp := smokerProbe.GetSetTempK()
+					if setTemp == 0 {
+						// log.Default().Println("No set temp. Turning off heat.")
+						dutyCycle.SetDutyCyclePercent(0)
+					} else if (setTemp - currentTemp) > 10 {
+						// log.Default().Println("Smoker low enough that PID doesn't matter. Turning on heat.")
+						dutyCycle.SetDutyCyclePercent(100)
+					} else {
+						// log.Default().Println("Smoker close enough to PID. Switching to PID control.")
+						pidController.Update(pid.ControllerInput{
+							ReferenceSignal: setTemp,
+							ActualSignal: currentTemp,
+							SamplingInterval: procTime,
+						})
+						pidOutput := pidController.State.ControlSignal
+						// log.Default().Printf("PID Error: %v\n", pidController.State.ControlError)
+						// log.Default().Printf("PID Output: %v\n", pidOutput)
+						scaledOutput := 0.0
+						if pidOutput > 0 {
+							scaledOutput = 0 * (1 - pidOutput / setTemp) + 100 * (pidOutput / setTemp)
+						}
+						// log.Default().Printf("Scaled Output: %v\n", scaledOutput)
+						dutyCycle.SetDutyCyclePercent(scaledOutput)
+						// log.Default().Printf("Duty Cycle: %v\n", dutyCycle.GetDutyCycle() / time.Millisecond)
+					}
 				}
 			}
 		})
 
 		log.Printf("Listening on http://%v\n", port)
-		log.Fatal(http.ListenAndServe(port, router))
+		log.Fatal(http.ListenAndServe(port, handlers.CORS(handlers.AllowedOrigins([]string{"*"}))(router)))
 	}
 
 	robot := gobot.NewRobot("ads1115Bot",
@@ -115,8 +261,9 @@ func authMiddleware(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		address := strings.Split(r.RemoteAddr, ":")[0]
-		log.Printf("Request from %v\n", address)
-		if (allowedIPMap[address]) {
+		log.Printf("Request from %v\n", r.RemoteAddr)
+		match, _ := regexp.MatchString(`[::1]`, r.RemoteAddr)
+		if match || allowedIPMap[address] {
 			next.ServeHTTP(w, r)
 			return
 		}

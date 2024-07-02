@@ -7,7 +7,7 @@ import (
 type Probe struct {
 	Id				string
 	Name 			string
-	SetTemp			float64
+	setTempK		float64
 	address			int
 	channel			int
 	adc 			*ADC
@@ -26,7 +26,7 @@ func NewProbe(id string,
 	return &Probe{
 		Id: id,
 		Name: name,
-		SetTemp: 0.0,
+		setTempK: 0.0,
 		address: address,
 		channel: channel,
 		resistorValue: resistorValue,
@@ -84,10 +84,40 @@ func (p *Probe) ReadTempF() (float64, error) {
 	return temperature * 9.0 / 5.0 + 32.0, nil
 }
 
+func (p *Probe) SetTempK(tempK float64) {
+	p.setTempK = tempK
+}
+
+func (p *Probe) SetTempC(tempC float64) {
+	p.setTempK = tempC + 273.15
+}
+
+func (p *Probe) SetTempF(tempF float64) {
+	p.setTempK = (tempF - 32.0) * 5.0 / 9.0
+}
+
+func (p *Probe) GetSetTempK() float64 {
+	return p.setTempK
+}
+
+func (p *Probe) GetSetTempC() float64 {
+	if p.setTempK == 0.0 {
+		return 0.0
+	}
+	return p.setTempK - 273.15
+}
+
+func (p *Probe) GetSetTempF() float64 {
+	if p.setTempK == 0.0 {
+		return 0.0
+	}
+	return p.GetSetTempC() * 9.0 / 5.0 + 32.0
+}
+
 func (p *Probe) ReadConnected() bool {
 	temperature, err := p.ReadTempK()
 	if err != nil {
 		return false
 	}
-	return temperature >= 270.0 && temperature <= 330.0
+	return temperature >= 270.0 && temperature <= 500.0
 }
