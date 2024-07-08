@@ -6,6 +6,7 @@ require gobot.io/x/gobot v1.16.0
 
 require (
 	github.com/0xcafed00d/joystick v1.0.1 // indirect
+	github.com/RedisTimeSeries/redistimeseries-go v1.4.4 // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/bmizerany/pat v0.0.0-20210406213842-e4b6760bdd6f // indirect
 	github.com/creack/goselect v0.1.2 // indirect
@@ -20,6 +21,7 @@ require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/gomodule/redigo v1.9.2 // indirect
 	github.com/google/pprof v0.0.0-20240625030939-27f56978b8b0 // indirect
 	github.com/gookit/color v1.5.4 // indirect
 	github.com/gorilla/handlers v1.5.2 // indirect
@@ -62,6 +64,15 @@ require (
 	github.com/stianeikeland/go-rpio/v4 v4.6.0 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/theojulienne/go-wireless v1.2.0 // indirect
+	github.com/tidwall/btree v1.7.0 // indirect
+	github.com/tidwall/buntdb v1.3.1 // indirect
+	github.com/tidwall/gjson v1.17.1 // indirect
+	github.com/tidwall/grect v0.1.4 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/rtred v0.1.2 // indirect
+	github.com/tidwall/tinyqueue v0.1.1 // indirect
 	github.com/tinygo-org/cbgo v0.0.4 // indirect
 	github.com/tinygo-org/pio v0.0.0-20240626192653-0b4cbef45f9b // indirect
 	github.com/vmihailenco/msgpack v4.0.4+incompatible // indirect

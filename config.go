@@ -16,6 +16,12 @@ type Config struct {
 	}
 	ProcessTime int
 	LogLocation string
+	DataLocation string
+	Redis struct {
+		Host string
+		Port string
+		Password string
+	}
 }
 
 func LoadConfig() *Config {
@@ -28,6 +34,12 @@ func LoadConfig() *Config {
 	viper.SetDefault("processTime", 200)
 
 	viper.SetDefault("logLocation", "/var/log/bahoa/")
+
+	viper.SetDefault("dataLocation", "/opt/bahoa/data/")
+
+	viper.SetDefault("redis.host", "localhost")
+	viper.SetDefault("redis.port", "6379")
+	viper.SetDefault("redis.password", "")
 
 
 	viper.SetConfigName("config")
@@ -62,6 +74,12 @@ func LoadConfig() *Config {
 
 	config.LogLocation = viper.GetString("logLocation")
 
+	config.DataLocation = viper.GetString("dataLocation")
+
+	config.Redis.Host = viper.GetString("redis.host")
+	config.Redis.Port = viper.GetString("redis.port")
+	config.Redis.Password = viper.GetString("redis.password")
+
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		config.Pid.ProportionalGain = viper.GetFloat64("pid.proportionalGain")
 		config.Pid.IntegralGain = viper.GetFloat64("pid.integralGain")
@@ -72,6 +90,12 @@ func LoadConfig() *Config {
 		config.ProcessTime = viper.GetInt("processTime")
 
 		config.LogLocation = viper.GetString("logLocation")
+
+		config.DataLocation = viper.GetString("dataLocation")
+
+		config.Redis.Host = viper.GetString("redis.host")
+		config.Redis.Port = viper.GetString("redis.port")
+		config.Redis.Password = viper.GetString("redis.password")
 	})
 
 	viper.WatchConfig()
@@ -89,6 +113,12 @@ func (c *Config) WriteConfig() {
 	viper.Set("processTime", c.ProcessTime)
 
 	viper.Set("logLocation", c.LogLocation)
+
+	viper.Set("dataLocation", c.DataLocation)
+
+	viper.Set("redis.host", c.Redis.Host)
+	viper.Set("redis.port", c.Redis.Port)
+	viper.Set("redis.password", c.Redis.Password)
 
 	viper.WriteConfig()
 }

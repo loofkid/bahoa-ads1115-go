@@ -51,10 +51,24 @@ func main() {
 		Compress: true,
 	}
 
+	redis := NewRedis(config.Redis.Host, config.Redis.Port, &config.Redis.Password)
+
+	redis.CreateTS("probe-0-temp", true)
+	redis.CreateTS("probe-1-temp", true)
+	redis.CreateTS("probe-2-temp", true)
+	redis.CreateTS("probe-3-temp", true)
+	redis.CreateTS("probe-0-set-temp", false)
+	redis.CreateTS("probe-1-set-temp", false)
+	redis.CreateTS("probe-2-set-temp", false)
+	redis.CreateTS("probe-3-set-temp", false)
+
 	mw := io.MultiWriter(os.Stdout, logger)
 
 	log.SetOutput(mw)
 	defer logger.Close()
+
+	wifi := NewWifi()
+	defer wifi.Close()
 
 	raspiAdaptor := raspi.NewAdaptor()
 	raspiAdaptor.Connect()
@@ -101,7 +115,14 @@ func main() {
 
 			socket.Emit("connected", "Connected to server")
 			log.Printf("Socket %v connected\n", clients)
-			socket.Join("probes")
+			socket.On("joinRoom", func(data ...any) {
+				room := data[0].(string)
+				socket.Join(sio.Room(room))
+				// for _, room := range rooms {
+				// 	log.Default().Println("Adding client", socket.Id(), "to room", room)
+				// 	socket.Join([]sio.Room(room.(string)))
+				// }
+			})
 
 			socket.On("setTemp", func(data ...any) {
 				log.Default().Println(data[0])
@@ -171,32 +192,52 @@ func main() {
 				config.WriteConfig()
 				socket.Emit("dutyCyclePeriod", float64(dutyCycle.GetPeriod()) / float64(time.Second))
 			})
+
+			socket.On("getWifi", func(a ...any) {
+				currentNetwork, err := wifi.GetCurrentNetwork()
+				if err != nil {
+					currentNetwork = Wlan{}
+				}
+				log.Default().Println(currentNetwork)
+				socket.Emit("wifi", currentNetwork)
+			})
 		})
 
 		router.Use(authMiddleware)
+
+		gobot.Every(30*time.Second, func() {
+			currentNetwork, err := wifi.GetCurrentNetwork()
+			if err != nil {
+				currentNetwork = Wlan{}
+			}
+			log.Default().Println(currentNetwork)
+			socketServer.To("pi").Emit("wifi", currentNetwork)
+		})
+
 
 		adc := NewADC(3.3, ads1115driver)
 		probeChannels := []int{0, 1, 2, 3}
 		procTime := time.Duration(config.ProcessTime)*time.Millisecond
 		gobot.Every(procTime, func() {
 			for i, channel := range probeChannels {
-				if slices.IndexFunc(probes, func(p Probe) bool {
+				index := slices.IndexFunc(probes, func(p Probe) bool {
 					return p.Id == fmt.Sprintf("probe-%v", i)
-				}) == -1 {
+				})
+				if index == -1 {
 						if channel == 0 {
-							probe := NewProbe(fmt.Sprintf("probe-%v", i), "Smoker", 0x48, channel, 100000, adc, 5)
+							probe := NewProbe(fmt.Sprintf("probe-%v", i), "Smoker", 0x48, channel, 100000, adc, 50)
 							
 							if (probe.ReadConnected()) {
 								probes = append(probes, *probe)
 							}
 						} else {
-							probe := NewProbe(fmt.Sprintf("probe-%v", i), fmt.Sprintf("Probe %v", i), 0x48, channel, 100000, adc, 5)
+							probe := NewProbe(fmt.Sprintf("probe-%v", i), fmt.Sprintf("Probe %v", i), 0x48, channel, 100000, adc, 50)
 							if (probe.ReadConnected()) {
 								probes = append(probes, *probe)
 							}
 						}
 				} else {
-					if !probes[i].ReadConnected() {
+					if !probes[index].ReadConnected() {
 						probes = slices.DeleteFunc(probes, func(p Probe) bool { return p.Id == fmt.Sprintf("probe-%v", i) })
 					}
 				}
@@ -208,10 +249,8 @@ func main() {
 				if errK != nil {
 					fmt.Println(errK)
 				} else {
-					// fmt.Printf("Set Temp: %vºF\n", probe.GetSetTempF())
-					// fmt.Printf("%v: %vK\n", probe.Name, roundFloat(tempK, 2))
-					// fmt.Printf("%v: %vºC\n", probe.Name, roundFloat(tempC, 2))
-					// fmt.Printf("%v: %vºF\n", probe.Name, roundFloat(tempF, 2))
+					redis.AddEntry(probe.Id + "-temp", tempK)
+					redis.AddEntry(probe.Id + "-set-temp", probe.GetSetTempK())
 					probeJson, _ := json.Marshal(map[string]interface{}{
 						"id": probe.Id,
 						"name": probe.Name,
@@ -221,8 +260,10 @@ func main() {
 						"setTempK": probe.GetSetTempK(),
 						"setTempC": probe.GetSetTempC(),
 						"setTempF": probe.GetSetTempF(),
+						"avgTempK": redis.GetAvg(probe.Id + "-temp"),
 					})
-					socketServer.In("probes").Emit("probe", probeJson)
+					socketServer.In("pi").Emit("probe", probeJson)
+					socketServer.In("pi").Emit("probeRecords", redis.GetRecentEntries(probe.Id, 10 * time.Minute))
 				}
 			}
 			if len(probes) > 0 {

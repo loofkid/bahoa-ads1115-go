@@ -1,6 +1,7 @@
 package main
 
 import (
+	// "log"
 	"math"
 )
 
@@ -63,7 +64,11 @@ func (p *Probe) ReadTempK() (float64, error) {
 	for _, reading := range p.lastReadings {
 		total += reading
 	}
-	temperature = total / float64(len(p.lastReadings))
+
+	if total > 0.0 && len(p.lastReadings) > 0 {
+		temperature = total / float64(len(p.lastReadings))
+	}
+	// log.Default().Println("Probe ", p.Id, " temperature: ", temperature)
 
 	return temperature, nil
 }
@@ -119,5 +124,5 @@ func (p *Probe) ReadConnected() bool {
 	if err != nil {
 		return false
 	}
-	return temperature >= 270.0 && temperature <= 500.0
+	return temperature >= 290.0 && temperature <= 395.0
 }
