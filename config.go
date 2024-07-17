@@ -22,9 +22,13 @@ type Config struct {
 		Port string
 		Password string
 	}
+	LocalAuth string
 }
 
 func LoadConfig() *Config {
+	viper.SetEnvPrefix("bahoa")
+	viper.AutomaticEnv()
+
 	viper.SetDefault("pid.proportionalGain", 3.0)
 	viper.SetDefault("pid.integralGain", 0.0)
 	viper.SetDefault("pid.derivativeGain", 0.0)
@@ -37,7 +41,7 @@ func LoadConfig() *Config {
 
 	viper.SetDefault("dataLocation", "/opt/bahoa/data/")
 
-	viper.SetDefault("redis.host", "localhost")
+	viper.SetDefault("redis.host", "10.13.13.11")
 	viper.SetDefault("redis.port", "6379")
 	viper.SetDefault("redis.password", "")
 
@@ -80,6 +84,8 @@ func LoadConfig() *Config {
 	config.Redis.Port = viper.GetString("redis.port")
 	config.Redis.Password = viper.GetString("redis.password")
 
+	config.LocalAuth = viper.GetString("localauthpw")
+
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		config.Pid.ProportionalGain = viper.GetFloat64("pid.proportionalGain")
 		config.Pid.IntegralGain = viper.GetFloat64("pid.integralGain")
@@ -96,6 +102,8 @@ func LoadConfig() *Config {
 		config.Redis.Host = viper.GetString("redis.host")
 		config.Redis.Port = viper.GetString("redis.port")
 		config.Redis.Password = viper.GetString("redis.password")
+
+		config.LocalAuth = viper.GetString("localauthpw")
 	})
 
 	viper.WatchConfig()

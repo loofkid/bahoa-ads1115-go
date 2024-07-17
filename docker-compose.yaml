@@ -1,0 +1,70 @@
+services:
+  bahoa-redis:
+    image: redis/redis-stack
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    volumes:
+      - bahoa-redis:/data
+    networks:
+      - private
+    environment:
+      - REDIS_ARGS=--requirepass Gloomy-Mullets-Basis6-Election --save 60 1 --loglevel warning --maxmemory 512mb
+    restart: unless-stopped
+
+  bahoa-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - latest
+    command: go run .
+    ports:
+      - "3000:3000"
+    volumes:
+    #   - /sys:/sys
+      - /opt/bahoa:/opt/bahoa
+      - /var/log/bahoa:/var/log/bahoa
+    #   - /usr/sbin/wpa_cli:/usr/sbin/wpa_cli
+    #   - /etc/wpa_supplicant:/etc/wpa_supplicant
+    #   - /var/run/wpa_supplicant:/var/run/wpa_supplicant
+    #   - /tmp:/tmp
+    # devices:
+    #   - /dev/gpiomem:/dev/gpiomem
+    networks:
+      - private
+      - public
+    restart: unless-stopped
+    # user: 1001:1001
+    privileged: true
+    environment:
+      - BAHOA_LOCALAUTHPW=Tusk-Lure-Passably-Compress-Flattery-Crouton-Dayroom5-Smashup-Lusty-Probably
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./
+          target: /app
+
+  bahoa-web:
+    image: node:latest
+    build: ../../bahoa-sveltekit-webgui
+    command: npm run dev
+    working_dir: /app
+
+    ports: 
+      - "5174:5174"
+    volumes:
+      - ../../bahoa-sveltekit-webgui:/app
+    networks:
+      - public
+    restart: unless-stopped
+    environment:
+      - BAHOA_LOCALAUTHPW=Tusk-Lure-Passably-Compress-Flattery-Crouton-Dayroom5-Smashup-Lusty-Probably
+
+volumes:
+  bahoa-redis:
+    driver: local
+
+networks:
+  private:
+  public:

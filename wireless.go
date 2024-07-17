@@ -65,6 +65,7 @@ func (w *Wifi) GetCurrentNetwork() (Wlan, error) {
 		log.Default().Println(err)
 		return w.lastWlan, err
 	}
+
 	network := Wlan{
 		ID: status.ID,
 		SSID: status.SSID,
