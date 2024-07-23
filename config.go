@@ -23,6 +23,10 @@ type Config struct {
 		Password string
 	}
 	LocalAuth string
+	Smoker struct {
+		MaxTempK float64
+		MinTempK float64
+	}
 }
 
 func LoadConfig() *Config {
@@ -32,6 +36,9 @@ func LoadConfig() *Config {
 	viper.SetDefault("pid.proportionalGain", 3.0)
 	viper.SetDefault("pid.integralGain", 0.0)
 	viper.SetDefault("pid.derivativeGain", 0.0)
+
+	viper.SetDefault("smoker.maxTempK", 450.0)
+	viper.SetDefault("smoker.minTempK", 255.0)
 
 	viper.SetDefault("dutyCycle.period", 5.0)
 
@@ -72,6 +79,9 @@ func LoadConfig() *Config {
 	config.Pid.IntegralGain = viper.GetFloat64("pid.integralGain")
 	config.Pid.DerivativeGain = viper.GetFloat64("pid.derivativeGain")
 
+	config.Smoker.MaxTempK = viper.GetFloat64("smoker.maxTempK")
+	config.Smoker.MinTempK = viper.GetFloat64("smoker.minTempK")
+
 	config.DutyCycle.Period = viper.GetFloat64("dutyCycle.period")
 
 	config.ProcessTime = viper.GetInt("processTime")
@@ -90,6 +100,9 @@ func LoadConfig() *Config {
 		config.Pid.ProportionalGain = viper.GetFloat64("pid.proportionalGain")
 		config.Pid.IntegralGain = viper.GetFloat64("pid.integralGain")
 		config.Pid.DerivativeGain = viper.GetFloat64("pid.derivativeGain")
+
+		config.Smoker.MaxTempK = viper.GetFloat64("smoker.maxTempK")
+		config.Smoker.MinTempK = viper.GetFloat64("smoker.minTempK")
 
 		config.DutyCycle.Period = viper.GetFloat64("dutyCycle.period")
 
@@ -115,6 +128,9 @@ func (c *Config) WriteConfig() {
 	viper.Set("pid.proportionalGain", c.Pid.ProportionalGain)
 	viper.Set("pid.integralGain", c.Pid.IntegralGain)
 	viper.Set("pid.derivativeGain", c.Pid.DerivativeGain)
+
+	viper.Set("smoker.maxTempK", c.Smoker.MaxTempK)
+	viper.Set("smoker.minTempK", c.Smoker.MinTempK)
 
 	viper.Set("dutyCycle.period", c.DutyCycle.Period)
 

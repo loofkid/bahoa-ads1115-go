@@ -22,7 +22,7 @@ import (
 	// "github.com/gorilla/handlers"
 	// "github.com/gorilla/mux"
 
-	"go.einride.tech/pid"
+	// "go.einride.tech/pid"
 
 	"gobot.io/x/gobot/v2"
 	// "gobot.io/x/gobot/v2/drivers/gpio"
@@ -158,8 +158,6 @@ func main() {
 	log.Default().Println("Connecting to ADS1115")
 	ads1115driver := i2c.NewADS1115Driver(raspiAdaptor, i2c.WithADS1x15BestGainForVoltage(3.3))
 
-	log.Default().Println("Setting up duty cycle")
-	dutyCycle := NewDutyCycle(time.Duration(config.DutyCycle.Period)*time.Second, 0)
 
 	log.Default().Println("Setting up GPIO connection")
 	rpio.Open()
@@ -169,16 +167,26 @@ func main() {
 	heatPin.Output()
 	heatPin.Low()
 	defer heatPin.Low()
-	dutyCycle.Start(heatPin.High, heatPin.Low)
+	log.Default().Println("Setting up duty cycle")
+	dutyCycle := NewDutyCycle(time.Duration(config.DutyCycle.Period)*time.Second, 0.0, heatPin.High, heatPin.Low)
 
 	log.Default().Println("Setting up PID controller")
-	pidController := pid.Controller{
-		Config: pid.ControllerConfig{
-			ProportionalGain: config.Pid.ProportionalGain,
-			IntegralGain: config.Pid.IntegralGain,
-			DerivativeGain: config.Pid.DerivativeGain,
-		},
-	}
+	pidInput := 0.0
+	pidOutput := 0.0
+	pidSetpoint := 0.0
+	pidController := NewQuickPID(&pidInput, &pidOutput, &pidSetpoint, config.Pid.ProportionalGain, config.Pid.IntegralGain, config.Pid.DerivativeGain)
+	pidController.Initialize()
+
+	tuningPid := false
+
+	// log.Default().Println("Setting up PID controller")
+	// pidController := pid.Controller{
+	// 	Config: pid.ControllerConfig{
+	// 		ProportionalGain: config.Pid.ProportionalGain,
+	// 		IntegralGain: config.Pid.IntegralGain,
+	// 		DerivativeGain: config.Pid.DerivativeGain,
+	// 	},
+	// }
 
 	probes := []Probe{}
 
@@ -404,9 +412,9 @@ func main() {
 
 			socket.On("getPID", func(a ...any) {
 				pidData := map[string]float64{
-					"p": pidController.Config.ProportionalGain,
-					"i": pidController.Config.IntegralGain,
-					"d": pidController.Config.DerivativeGain,
+					"p": pidController.GetKp(),
+					"i": pidController.GetKi(),
+					"d": pidController.GetKd(),
 				}
 
 				socket.Emit("PID", pidData)
@@ -420,19 +428,122 @@ func main() {
 						log.Default().Println("Recovered in f", r)
 					}
 				}()
-				pidController.Config.ProportionalGain = pidData["p"].(float64)
+
+				pidController.SetTunings(pidData["p"].(float64), pidData["i"].(float64), pidData["d"].(float64))
 				config.Pid.ProportionalGain = pidData["p"].(float64)
-				pidController.Config.IntegralGain = pidData["i"].(float64)
 				config.Pid.IntegralGain = pidData["i"].(float64)
-				pidController.Config.DerivativeGain = pidData["d"].(float64)
 				config.Pid.DerivativeGain = pidData["d"].(float64)
 				config.WriteConfig()
 				newPidData := map[string]float64{
-					"p": pidController.Config.ProportionalGain,
-					"i": pidController.Config.IntegralGain,
-					"d": pidController.Config.DerivativeGain,
+					"p": pidController.GetKp(),
+					"i": pidController.GetKi(),
+					"d": pidController.GetKd(),
 				}
 				socket.Emit("PID", newPidData)
+			})
+
+			socket.On("autoTunePID", func(a ...any) {
+				tuningData := a[0].(map[string]interface{})
+				defer func() {
+					if r := recover(); r != nil {
+						log.Default().Println("Recovered in f", r)
+					}
+				}()
+
+				var callbackFn func(map[string]float64, error)
+				if fn, ok := a[len(a)-1].(func(map[string]float64, error)); ok {
+					callbackFn = fn
+
+					log.Default().Println("Callback is a function!")
+
+					smokerProbeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == "probe-0" })
+					if (smokerProbeIndex == -1) {
+						callbackFn(nil, fmt.Errorf("smoker probe not found"))
+						return
+					}
+
+
+
+					if setpoint, ok := tuningData["temperature"].(float64); ok {
+						if setpoint > config.Smoker.MaxTempK {
+							callbackFn(nil, fmt.Errorf("temperature too high"))
+							return
+						}
+						if setpoint < config.Smoker.MinTempK {
+							callbackFn(nil, fmt.Errorf("temperature too low"))
+							return
+						}
+
+						tuningMethod := ZieglerNicholsPID
+						if tuningData["tuningMethod"] != nil {
+							if tuningMethodCast, ok := tuningData["tuningMethod"].(TuningMethod); ok {
+								tuningMethod = tuningMethodCast
+							}
+						}
+
+						smokerProbe := probes[smokerProbeIndex]
+
+						sampleTime := dutyCycle.Period
+						print := true
+
+						outputStep := 5.0
+						hysteresis := 1.0
+
+						go func() {
+							tuningPid = true
+							pidController.SetMode(Manual)
+							defer func() {tuningPid = false}()
+
+							pidController.NewAutoTune(tuningMethod)
+
+							pidController.AutoTune.AutoTuneConfig(outputStep, hysteresis, setpoint, 85.0, pidController.controllerDirection, print, sampleTime)
+
+							pidSetpoint = setpoint
+
+							outKp, outKi, outKd := 0.0, 0.0, 0.0
+
+							preheatCurrentTemp, _ := smokerProbe.ReadTempK()
+							for preheatCurrentTemp + 20 < setpoint {
+								preheatCurrentTemp, _ = smokerProbe.ReadTempK()
+								dutyCycle.SetDutyCyclePercent(100)
+								time.Sleep(sampleTime)
+							}
+
+							var autoTuneStage AutoTuneStage
+							for autoTuneStage != Clr {
+								currentTemp, _ := smokerProbe.ReadTempK()
+
+								autoTuneStage = pidController.AutoTune.AutoTuneLoop()
+
+								switch autoTuneStage {
+									case AutoTune:
+										pidInput = currentTemp
+										dutyCycle.SetDutyCyclePercent(gobot.Rescale(pidOutput, 0, 255, 0, 100))
+										socket.Emit("pidTune", "AutoTune")
+									case Tunings:
+										pidController.AutoTune.SetAutoTuneConstants(&outKp, &outKi, &outKd)
+										pidController.SetMode(Automatic)
+										socket.Emit("pidTune", "Tunings")
+									case Clr:
+										pidController.ClearAutoTune()
+										socket.Emit("pidTune", "Clr")
+								}
+								time.Sleep(sampleTime)
+							}
+
+							callbackFn(map[string]float64{
+								"p": outKp,
+								"i": outKi,
+								"d": outKd,
+							}, nil)
+						}()
+					} else {
+						callbackFn(nil, fmt.Errorf("temperature not provided"))
+						return
+					}
+				} else {
+					log.Default().Println("Callback is not a function")
+				}
 			})
 
 			socket.On("getDutyCyclePeriod", func(a ...any) {
@@ -500,6 +611,36 @@ func main() {
 			}
 		})
 
+		// PID loop
+		gobot.Every(dutyCycle.Period, func() {
+			if !tuningPid {
+				smokerProbeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == "probe-0" })
+				if smokerProbeIndex != -1 {
+					setTemp := probes[smokerProbeIndex].GetSetTempK()
+					temp, err := probes[smokerProbeIndex].ReadTempK()
+					if err != nil {
+						return
+					}
+					if setTemp > temp + 20 {
+						dutyCycle.SetDutyCyclePercent(100)
+					} else if setTemp > temp {
+						if pidController.GetMode() != Automatic {
+							pidController.SetMode(Automatic)
+						}
+						pidInput = temp
+						pidSetpoint = setTemp
+						pidController.Compute()
+						dutyCycle.SetDutyCyclePercent(gobot.Rescale(pidOutput, 0, 255, 0, 100))
+					} else {
+						if pidController.GetMode() != Manual {
+							pidController.SetMode(Manual)
+						}
+						dutyCycle.SetDutyCyclePercent(0)
+					}
+				}
+			}
+		})
+		
 
 		adc := NewADC(3.3, ads1115driver)
 		probeChannels := []int{0, 1, 2, 3}
@@ -561,38 +702,38 @@ func main() {
 				}
 			}
 			socketServer.To("pi", "web").Emit("probes", probeDataList)
-			if len(probes) > 0 {
-				smokerProbeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == "probe-0" })
-				if smokerProbeIndex != -1 && probes[smokerProbeIndex].ReadConnected() {
-					smokerProbe := probes[smokerProbeIndex]
-					currentTemp, _ := smokerProbe.ReadTempK()
-					setTemp := smokerProbe.GetSetTempK()
-					if setTemp == 0 {
-						// log.Default().Println("No set temp. Turning off heat.")
-						dutyCycle.SetDutyCyclePercent(0)
-					} else if (setTemp - currentTemp) > 10 {
-						// log.Default().Println("Smoker low enough that PID doesn't matter. Turning on heat.")
-						dutyCycle.SetDutyCyclePercent(100)
-					} else {
-						// log.Default().Println("Smoker close enough to PID. Switching to PID control.")
-						pidController.Update(pid.ControllerInput{
-							ReferenceSignal: setTemp,
-							ActualSignal: currentTemp,
-							SamplingInterval: procTime,
-						})
-						pidOutput := pidController.State.ControlSignal
-						// log.Default().Printf("PID Error: %v\n", pidController.State.ControlError)
-						// log.Default().Printf("PID Output: %v\n", pidOutput)
-						scaledOutput := 0.0
-						if pidOutput > 0 {
-							scaledOutput = 0 * (1 - pidOutput / setTemp) + 100 * (pidOutput / setTemp)
-						}
-						// log.Default().Printf("Scaled Output: %v\n", scaledOutput)
-						dutyCycle.SetDutyCyclePercent(scaledOutput)
-						// log.Default().Printf("Duty Cycle: %v\n", dutyCycle.GetDutyCycle() / time.Millisecond)
-					}
-				}
-			}
+			// if len(probes) > 0 {
+			// 	smokerProbeIndex := slices.IndexFunc(probes, func(p Probe) bool { return p.Id == "probe-0" })
+			// 	if smokerProbeIndex != -1 && probes[smokerProbeIndex].ReadConnected() {
+			// 		smokerProbe := probes[smokerProbeIndex]
+			// 		currentTemp, _ := smokerProbe.ReadTempK()
+			// 		setTemp := smokerProbe.GetSetTempK()
+			// 		if setTemp == 0 {
+			// 			// log.Default().Println("No set temp. Turning off heat.")
+			// 			dutyCycle.SetDutyCyclePercent(0)
+			// 		} else if (setTemp - currentTemp) > 10 {
+			// 			// log.Default().Println("Smoker low enough that PID doesn't matter. Turning on heat.")
+			// 			dutyCycle.SetDutyCyclePercent(100)
+			// 		} else {
+			// 			// log.Default().Println("Smoker close enough to PID. Switching to PID control.")
+			// 			pidController.Update(pid.ControllerInput{
+			// 				ReferenceSignal: setTemp,
+			// 				ActualSignal: currentTemp,
+			// 				SamplingInterval: procTime,
+			// 			})
+			// 			pidOutput := pidController.State.ControlSignal
+			// 			// log.Default().Printf("PID Error: %v\n", pidController.State.ControlError)
+			// 			// log.Default().Printf("PID Output: %v\n", pidOutput)
+			// 			scaledOutput := 0.0
+			// 			if pidOutput > 0 {
+			// 				scaledOutput = 0 * (1 - pidOutput / setTemp) + 100 * (pidOutput / setTemp)
+			// 			}
+			// 			// log.Default().Printf("Scaled Output: %v\n", scaledOutput)
+			// 			dutyCycle.SetDutyCyclePercent(scaledOutput)
+			// 			// log.Default().Printf("Duty Cycle: %v\n", dutyCycle.GetDutyCycle() / time.Millisecond)
+			// 		}
+			// 	}
+			// }
 		})
 	}
 
